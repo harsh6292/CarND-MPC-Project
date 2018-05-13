@@ -92,20 +92,89 @@ int main() {
           double psi = j[1]["psi"];
           double v = j[1]["speed"];
 
+          double delta = j[1]["steering_angle"];
+          double acceleration = j[1]["throttle"];
+
+
+          // Bring the car to origin (reference point) and shift reference to align to straight line
+          for (int i = 0; i < ptsx.size(); i++) {
+
+            double shift_x = ptsx[i] - px;
+            double shift_y = ptsy[i] - py;
+
+            // Rotate the car to align its direction to x-axis reference point
+            ptsx[i] = (shift_x * cos(0-psi) - shift_y * sin(0-psi));
+            ptsy[i] = (shift_x * sin(0-psi) + shift_y * cos(0-psi));
+          }
+
+
+          // Convert double vector to Eigen::VectorXd
+          double* ptrx = &ptsx[0];
+          Eigen::Map<Eigen::VectorXd> ptsx_eigen(ptrx, 6);
+
+          double* ptry = &ptsy[0];
+          Eigen::Map<Eigen::VectorXd> ptsy_eigen(ptry, 6);
+
+          // Fit the above points to a polynomial and find coefficients
+          auto coeff = polyfit(ptsx_eigen, ptsy_eigen, 3);
+
+          // Calculate CTE
+          // Since the car is at origin, no need to subtract anything
+          // or evaluate fitted polynomial at origin
+          double cte = polyeval(coeff, 0);
+
+          // Calculate change in orientation
+          // Since we rotated the plane to align at origin x-axis, the orientation of car aligns with x-axis
+          // so psi is 0 radians
+          // epsi = psi - atan(coeff[1]) + 2*coeff[2]*px + 3*coeff[3]*pow(px, 2)
+          double epsi = -atan(coeff[1]);
+
+
+          // Incorporate latency (100 ms) to the vehicle model
+          double latency = 0.1;
+          double Lf = 2.67;
+
+
+          // Predict where car will be after 100 ms of latency
+          double latency_x = v * cos(0) * latency;
+          double latency_y = 0;
+          double latency_psi = 0 - (v * delta / Lf * latency);
+          double latency_v = v + (acceleration * latency);
+          double latency_cte = cte + (v * sin(epsi) * latency);
+          double latency_epsi = epsi + latency_psi;
+
+
+          // Calculate the new state of the vehicle model
+          Eigen::VectorXd state(6);
+          // State is (x, y, psi, v, cte, epsi)
+          state << latency_x, latency_y, latency_psi, latency_v, latency_cte, latency_epsi;
+
+
           /*
           * TODO: Calculate steering angle and throttle using MPC.
           *
           * Both are in between [-1, 1].
           *
           */
-          double steer_value;
-          double throttle_value;
+
+          auto vars = mpc.Solve(state, coeff);
+
+
+          // First 2 values in vars of mpc solve method returns the steering angle and throttle
+          double steer_value = -1.0 * (vars[0]/deg2rad(25));
+          double throttle_value = vars[1];
+
+
 
           json msgJson;
           // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
           // Otherwise the values will be in between [-deg2rad(25), deg2rad(25] instead of [-1, 1].
           msgJson["steering_angle"] = steer_value;
           msgJson["throttle"] = throttle_value;
+
+          cout<<"New throttle value: " << throttle_value << endl;
+          cout<<"New Steer value: " << steer_value << endl;
+
 
           //Display the MPC predicted trajectory 
           vector<double> mpc_x_vals;
@@ -114,8 +183,21 @@ int main() {
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Green line
 
+          // First two values of vars are used above, x values are in even position, y are in odd
+          for (int i = 2; i < vars.size(); i++) {
+            if (i % 2 == 0) {
+              mpc_x_vals.push_back(vars[i]);
+            } else {
+              mpc_y_vals.push_back(vars[i]);
+            }
+          }
+
           msgJson["mpc_x"] = mpc_x_vals;
           msgJson["mpc_y"] = mpc_y_vals;
+
+
+
+
 
           //Display the waypoints/reference line
           vector<double> next_x_vals;
@@ -124,12 +206,25 @@ int main() {
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Yellow line
 
+          // Plot the next 25 points based on current px, py using coeffs
+          double poly_inc = 2.5;
+          int num_points = 25;
+
+          for (int i = 1; i < num_points; i++) {
+            next_x_vals.push_back(poly_inc * i);
+            next_y_vals.push_back(polyeval(coeff, (poly_inc * i)));
+          }
+
           msgJson["next_x"] = next_x_vals;
           msgJson["next_y"] = next_y_vals;
 
 
+
+
           auto msg = "42[\"steer\"," + msgJson.dump() + "]";
           std::cout << msg << std::endl;
+
+
           // Latency
           // The purpose is to mimic real driving conditions where
           // the car does actuate the commands instantly.
